@@ -1,0 +1,109 @@
+pipeline {
+    agent any
+    parameters {
+        choice(name: 'ACTION', choices: ['apply', 'destroy'], description: 'Select action: apply or destroy')
+    }
+    environment {
+        TERRAFORM_WORKSPACE = "/var/lib/jenkins/workspace/redis/Terraform_Redis/"
+        INSTALL_WORKSPACE = "/var/lib/jenkins/workspace/redis/"
+    }
+    stages {
+        stage('Clone Repository') {
+            steps {
+               git branch: 'main', credentialsId: '', url: ''
+            }
+        }
+        stage('Terraform Init') {
+            steps {
+                // Initialize Terraform
+                sh "cd ${env.TERRAFORM_WORKSPACE} && terraform init"
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                // Run Terraform plan
+                sh "cd ${env.TERRAFORM_WORKSPACE} && terraform plan"
+            }
+        }
+        stage('Approval For Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                // Prompt for approval before applying changes
+                input "Do you want to apply Terraform changes?"
+            }
+        }
+
+        stage('Terraform Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                // Run Terraform apply
+               sh """
+                    cd ${env.TERRAFORM_WORKSPACE}
+                    terraform apply -auto-approve
+                    terraform output IP_Public_Bastion > Ip.txt
+                    sudo scp -o StrictHostKeyChecking=no -i "redis_key.pem" "redis_key.pem" ubuntu@`cat Ip.txt | sed 's/"//g'`:/home/ubuntu/
+                    sudo cp ${env.TERRAFORM_WORKSPACE}/redis_key.pem ${env.INSTALL_WORKSPACE}
+                    sudo chown jenkins:jenkins ${env.INSTALL_WORKSPACE}/redis_key.pem
+                    sudo chmod 400 ${env.INSTALL_WORKSPACE}/redis_key.pem  
+                    sudo cp ${env.TERRAFORM_WORKSPACE}/redis_key.pem /home/ubuntu/
+                    sudo chown ubuntu:ubuntu /home/ubuntu/redis_key.pem
+                    sudo chmod 400 /home/ubuntu/redis_key.pem 
+                """
+
+            }
+        }
+
+        stage('Approval for Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                // Prompt for approval before destroying resources
+                input "Do you want to Terraform Destroy?"
+            }
+        }
+
+        stage('Terraform Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                // Destroy Infra
+                sh "cd ${env.TERRAFORM_WORKSPACE} && terraform destroy -auto-approve"
+            }
+        }
+        stage('Mysql Deploy') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                // Deploy redis
+                sh "cd ${env.INSTALL_WORKSPACE} && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook install_redis.yml"
+                    
+            }
+        }
+
+    }
+
+    post {
+        success {
+            script {
+                if (params.ACTION == 'apply') {
+                    emailext body: 'The build ${BUILD_NUMBER} is completed with status successful and Created Infra and Deploy Redis on Target Host', subject: 'Build status: successful (apply)', to: 'kshamata@gmail.com'
+                } else if (params.ACTION == 'destroy') {
+                    emailext body: 'The build ${BUILD_NUMBER} is completed with status successful and Destroy all infra ', subject: 'Build status: successful (destroy)', to: 'kshamata@gmail.com'
+                }
+            }
+        }
+        failure {
+            script {
+                emailext body: 'The build ${BUILD_NUMBER} is completed with status Failure', subject: 'Build status: Failed', to: 'kshamata@gmail.com'
+            }
+        }
+    }
+}

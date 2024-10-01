@@ -1,0 +1,9 @@
+---
+# vars file for rediis
+
+redis_packages:
+  ubuntu:
+    - redis-server
+  centos:
+    - redis
+
